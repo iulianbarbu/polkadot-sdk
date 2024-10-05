@@ -14903,6 +14903,7 @@ dependencies = [
 name = "polkadot-omni-node-lib"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "assert_cmd",
  "async-trait",
  "clap 4.5.13",
@@ -14921,6 +14922,7 @@ dependencies = [
  "docify",
  "frame-benchmarking",
  "frame-benchmarking-cli",
+ "frame-metadata 16.0.0",
  "frame-support",
  "frame-system-rpc-runtime-api",
  "frame-try-runtime",
