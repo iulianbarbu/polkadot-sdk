@@ -27,6 +27,7 @@
   - [Connect with the Polkadot-JS Apps Front-End](#connect-with-the-polkadot-js-apps-front-end)
   - [Takeaways](#takeaways)
 
+- [Deploying a Parachain](#deploying-a-parachain)
 - [Contributing](#contributing)
 - [Getting Help](#getting-help)
 
@@ -196,6 +197,11 @@ Development parachains:
 - 🧹 Do not persist the state.
 - 💰 Are preconfigured with a genesis state that includes several prefunded development accounts.
 - 🧑‍⚖️ Development accounts are used as validators, collators, and `sudo` accounts.
+
+## Deploying a Parachain
+
+You can see a guide on the [`Polkadot Wiki`](https://wiki.polkadot.network/docs/build-guides-template-basic),
+which goes thorugh an example by using [`polkadot-parachain`](https://crates.io/crates/polkadot-parachain-bin) node.
 
 ## Contributing
 
