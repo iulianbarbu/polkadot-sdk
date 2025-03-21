@@ -76,7 +76,7 @@ const DEFAULT_PARA_ID: u32 = 100;
 const LOG_TARGET: &'static str = "polkadot_sdk_frame::benchmark::overhead";
 
 /// Benchmark the execution overhead per-block and per-extrinsic.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct OverheadCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]

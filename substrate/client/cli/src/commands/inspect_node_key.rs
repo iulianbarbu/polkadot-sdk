@@ -28,7 +28,7 @@ use std::{
 };
 
 /// The `inspect-node-key` command
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(
 	name = "inspect-node-key",
 	about = "Load a node key from a file or stdin and print the corresponding peer-id."

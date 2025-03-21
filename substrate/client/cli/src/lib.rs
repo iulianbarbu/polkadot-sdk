@@ -24,7 +24,7 @@
 #![warn(unused_extern_crates)]
 #![warn(unused_imports)]
 
-use clap::{CommandFactory, FromArgMatches, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches, Parser};
 use log::warn;
 use sc_service::Configuration;
 
@@ -144,6 +144,35 @@ pub trait SubstrateCli: Sized {
 		let matches = app.try_get_matches_from(iter).unwrap_or_else(|e| e.exit());
 
 		<Self as FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit())
+	}
+
+	/// Construct from subcommands.
+	fn from_subcommands<I>(iter: I) -> (Self, ArgMatches)
+	where
+		Self: Parser + Sized,
+		I: IntoIterator,
+		I::Item: Into<clap::Command> + Clone,
+	{
+		let app = <Self as CommandFactory>::command();
+		let mut full_version = Self::impl_version();
+		full_version.push('\n');
+		let name = Self::executable_name();
+		let author = Self::author();
+		let about = Self::description();
+		let app = app
+			.name(name)
+			.author(author)
+			.about(about)
+			.version(full_version)
+			.propagate_version(true)
+			.args_conflicts_with_subcommands(true)
+			.subcommand_negates_reqs(true)
+			.subcommands(iter);
+
+		let matches =
+			app.try_get_matches_from(&mut std::env::args_os()).unwrap_or_else(|e| e.exit());
+
+		(<Self as FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit()), matches)
 	}
 
 	/// Helper function used to parse the command line arguments. This is the equivalent of

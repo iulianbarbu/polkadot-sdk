@@ -44,7 +44,7 @@ pub enum ListOutput {
 }
 
 /// Benchmark the extrinsic weight of FRAME Pallets.
-#[derive(Debug, clap::Parser)]
+#[derive(Debug, Clone, clap::Parser)]
 pub struct PalletCmd {
 	/// Select a FRAME Pallet to benchmark, or `*` for all (in which case `extrinsic` must be `*`).
 	#[arg(short, long, value_parser = parse_pallet_name, required_unless_present_any = ["list", "json_input", "all"], default_value_if("all", "true", Some("*".into())))]

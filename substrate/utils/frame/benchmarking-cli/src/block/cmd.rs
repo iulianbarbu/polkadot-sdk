@@ -55,7 +55,7 @@ use super::bench::{Benchmark, BenchmarkParams};
 /// The percent number is important and indicates how much weight
 /// was used as compared to the consumed weight.
 /// This number should be below 100% for reference hardware.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct BlockCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]

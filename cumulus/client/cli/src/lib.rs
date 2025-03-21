@@ -39,7 +39,7 @@ use sp_runtime::traits::{Block as BlockT, Zero};
 use url::Url;
 
 /// The `purge-chain` command used to remove the whole chain: the parachain and the relay chain.
-#[derive(Debug, clap::Parser)]
+#[derive(Debug, Clone, clap::Parser)]
 #[group(skip)]
 pub struct PurgeChainCmd {
 	/// The base struct of the purge-chain command.
@@ -150,7 +150,7 @@ where
 }
 
 /// Command for exporting the genesis head data of the parachain
-#[derive(Debug, clap::Parser)]
+#[derive(Debug, Clone, clap::Parser)]
 pub struct ExportGenesisHeadCommand {
 	/// Output file name or stdout if unspecified.
 	#[arg()]
@@ -203,7 +203,7 @@ impl sc_cli::CliConfiguration for ExportGenesisHeadCommand {
 }
 
 /// Command for exporting the genesis wasm file.
-#[derive(Debug, clap::Parser)]
+#[derive(Debug, Clone, clap::Parser)]
 pub struct ExportGenesisWasmCommand {
 	/// Output file name or stdout if unspecified.
 	#[arg()]

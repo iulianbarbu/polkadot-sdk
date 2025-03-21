@@ -28,7 +28,7 @@ use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor};
 use std::{fmt::Debug, str::FromStr, sync::Arc};
 
 /// The `revert` command used revert the chain to a previous state.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct RevertCmd {
 	/// Number of blocks to revert.
 	#[arg(default_value = "256")]

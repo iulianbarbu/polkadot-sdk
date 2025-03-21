@@ -45,7 +45,7 @@ pub use hardware::SUBSTRATE_REFERENCE_HARDWARE;
 /// which influence the results.
 ///
 /// You can use the `--base-path` flag to set a location for the disk benchmarks.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct MachineCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]

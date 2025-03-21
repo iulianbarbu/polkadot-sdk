@@ -24,11 +24,11 @@ use crate::{
 	},
 };
 use chain_spec_builder::ChainSpecBuilder;
-use clap::{Command, CommandFactory, FromArgMatches, ValueEnum};
+use clap::{ArgMatches, Command, CommandFactory, FromArgMatches, ValueEnum};
 use sc_chain_spec::ChainSpec;
 use sc_cli::{
-	CliConfiguration, DefaultConfigurationValues, ImportParams, KeystoreParams, NetworkParams,
-	RpcEndpoint, SharedParams, SubstrateCli,
+	BuildSpecCmd, CliConfiguration, DefaultConfigurationValues, ImportParams, KeystoreParams,
+	NetworkParams, RpcEndpoint, SharedParams, SubstrateCli,
 };
 use sc_service::{config::PrometheusConfig, BasePath};
 use std::{
@@ -69,7 +69,7 @@ pub trait CliConfig {
 }
 
 /// Sub-commands supported by the collator.
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, Clone, clap::Subcommand)]
 pub enum Subcommand {
 	/// Key management CLI utilities
 	#[command(subcommand)]
@@ -134,6 +134,19 @@ pub enum Subcommand {
 	Benchmark(frame_benchmarking_cli::BenchmarkCmd),
 }
 
+// Implement `From<Option<(&str, &ArgMatches)>>` for `Commands`
+impl<'a> From<(&'a str, &'a ArgMatches)> for Subcommand {
+	fn from(subcommand: (&str, &ArgMatches)) -> Self {
+		match subcommand {
+			("build-spec", sub_m) =>
+				Subcommand::BuildSpec(BuildSpecCmd::from_arg_matches(sub_m).unwrap()),
+			("chain-spec-builder", sub_m) =>
+				Subcommand::ChainSpecBuilder(ChainSpecBuilder::from_arg_matches(sub_m).unwrap()),
+			_ => panic!("No valid subcommand provided."),
+		}
+	}
+}
+
 /// CLI Options shipped with `polkadot-omni-node`.
 #[derive(clap::Parser)]
 #[command(
@@ -146,7 +159,7 @@ pub struct Cli<Config: CliConfig> {
 	pub(crate) chain_spec_loader: Option<Box<dyn LoadSpec>>,
 
 	/// Possible subcommands. See [`Subcommand`].
-	#[command(subcommand)]
+	#[arg(skip)]
 	pub subcommand: Option<Subcommand>,
 
 	/// The shared parameters with all cumulus-based parachain nodes.

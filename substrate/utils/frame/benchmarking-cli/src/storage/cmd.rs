@@ -36,7 +36,7 @@ use super::template::TemplateData;
 use crate::shared::{new_rng, HostInfoParams, WeightParams};
 
 /// Benchmark the storage speed of a chain snapshot.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct StorageCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]

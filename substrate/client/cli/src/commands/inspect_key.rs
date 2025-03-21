@@ -27,7 +27,7 @@ use sp_core::crypto::{ExposeSecret, SecretString, SecretUri, Ss58Codec};
 use std::str::FromStr;
 
 /// The `inspect` command
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 #[command(
 	name = "inspect",
 	about = "Gets a public key and a SS58 address from the provided Secret URI"

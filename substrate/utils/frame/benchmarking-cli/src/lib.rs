@@ -41,7 +41,7 @@ use sc_cli::{CliConfiguration, DatabaseParams, ImportParams, PruningParams, Resu
 /// The root `benchmarking` command.
 ///
 /// Has no effect itself besides printing a help menu of the sub-commands.
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, Clone, clap::Subcommand)]
 pub enum BenchmarkCmd {
 	Pallet(PalletCmd),
 	Storage(StorageCmd),

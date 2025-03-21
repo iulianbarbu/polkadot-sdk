@@ -38,7 +38,7 @@ use super::{
 ///
 /// NOTE: The BlockExecutionWeight is ignored  in this case since it
 // is very small compared to the total block execution time.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct ExtrinsicCmd {
 	#[allow(missing_docs)]
 	#[clap(flatten)]

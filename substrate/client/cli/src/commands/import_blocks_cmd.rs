@@ -34,7 +34,7 @@ use std::{
 };
 
 /// The `import-blocks` command used to import blocks.
-#[derive(Debug, Parser)]
+#[derive(Debug, Clone, Parser)]
 pub struct ImportBlocksCmd {
 	/// Input file or stdin if unspecified.
 	#[arg()]

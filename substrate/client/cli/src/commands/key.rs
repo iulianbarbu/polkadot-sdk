@@ -25,7 +25,7 @@ use super::{
 use crate::{Error, SubstrateCli};
 
 /// Key utilities for the cli.
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, Clone, clap::Subcommand)]
 pub enum KeySubcommand {
 	/// Generate a random node key, write it to a file or stdout and write the
 	/// corresponding peer-id to stderr
