@@ -190,6 +190,9 @@
 //! * runtimes must define a type for [`frame-system`] pallet, which is recommended to be named as
 //!   `System`. The configured [`block number`] here will be used by Omni Node to configure AURA
 //!   accordingly.
+//! * runtimes must define a type for [`pallet-aura`] pallet, which is recommended to be named
+//! 'Aura'. The crypto algorithm used for the keypair of AURA [`Authorities`] set is relevant for
+//! Omni Node configuration, since runtimes can use `Sr25519` or `Ed25519`.
 //!
 //! [`templates`]: crate::polkadot_sdk::templates
 //! [`parachain-template`]: https://github.com/paritytech/polkadot-sdk-parachain-template

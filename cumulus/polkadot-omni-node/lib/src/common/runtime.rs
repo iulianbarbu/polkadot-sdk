@@ -29,9 +29,11 @@ use subxt_metadata::{Metadata, StorageEntryType};
 pub const DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME: &str = "ParachainSystem";
 /// Expected frame system pallet runtime type name.
 pub const DEFAULT_FRAME_SYSTEM_PALLET_NAME: &str = "System";
+/// Expected parachain system pallet runtime type name.
+pub const DEFAULT_PALLET_AURA: &str = "Aura";
 
 /// The Aura ID used by the Aura consensus
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum AuraConsensusId {
 	/// Ed25519
 	Ed25519,
@@ -104,7 +106,7 @@ pub struct DefaultRuntimeResolver;
 impl RuntimeResolver for DefaultRuntimeResolver {
 	fn runtime(&self, chain_spec: &dyn ChainSpec) -> sc_cli::Result<Runtime> {
 		let Ok(metadata_inspector) = MetadataInspector::new(chain_spec) else {
-			log::info!("Unable to check metadata. Skipping metadata checks. Metadata checks are supported for metadata versions v14 and higher.");
+			log::info!("Unable to inspect runtime's metadata. Skipping auto-configuration. Runtime's metadata inspection is supported for metadata versions v14 and higher. Returning with a best effort configuration: block number set to `u32` and app crypto type for AURA set to `Sr25519`.");
 			return Ok(Runtime::Omni(BlockNumber::U32, Consensus::Aura(AuraConsensusId::Sr25519)))
 		};
 
@@ -129,7 +131,29 @@ impl RuntimeResolver for DefaultRuntimeResolver {
 			);
 		}
 
-		Ok(Runtime::Omni(block_number, Consensus::Aura(AuraConsensusId::Sr25519)))
+		if !metadata_inspector.pallet_exists(DEFAULT_PALLET_AURA) {
+			log::warn!(
+				r#"⚠️  Pallet AURA (https://docs.rs/crate/cumulus-pallet-parachain-system/latest) is
+			   missing from the runtime’s metadata. Please check Omni Node docs for runtime conventions:
+			   https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html#runtime-conventions."#
+			);
+		}
+
+		let aura_app_crypto = match metadata_inspector.aura_app_crypto_type() {
+			Some(inner) => inner,
+			None => {
+				log::warn!(
+					r#"⚠️  There isn't a runtime type named `Authorities`, corresponding to `pallet-aura` authorities set
+					(https://docs.rs/pallet-aura/latest/pallet_aura/pallet/type.Authorities.html). This indicates to a
+					corrupted pallet storage or incompatible metadata, but we default to `sr25519` as best effort. Please
+					check Omni Node docs for runtime conventions:
+					https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html#runtime-conventions."#
+				);
+				AuraConsensusId::Sr25519
+			},
+		};
+		log::info!("found app crypto: {:#?}", aura_app_crypto);
+		Ok(Runtime::Omni(block_number, Consensus::Aura(aura_app_crypto)))
 	}
 }
 
@@ -155,6 +179,29 @@ impl MetadataInspector {
 			})
 			.and_then(|ty_id| self.0.types().resolve(*ty_id))
 			.and_then(|portable_type| BlockNumber::from_type_def(&portable_type.type_def))
+	}
+
+	fn aura_app_crypto_type(&self) -> Option<AuraConsensusId> {
+		let pallet_metadata = self.0.pallet_by_name(DEFAULT_PALLET_AURA);
+		let index_type_authorities_set = 0;
+		let index_type_app_crypto = 1;
+		pallet_metadata
+			.and_then(|inner| inner.storage())
+			.and_then(|inner| inner.entry_by_name("Authorities"))
+			.and_then(|authorities| match authorities.entry_type() {
+				StorageEntryType::Plain(ty_id) => Some(ty_id),
+				_ => None,
+			})
+			.and_then(|ty_id| self.0.types().resolve(*ty_id))
+			.and_then(|portable_type| portable_type.type_params.get(index_type_authorities_set))
+			.and_then(|parameter_type| parameter_type.ty)
+			.and_then(|ty| self.0.types().resolve(ty.id))
+			.and_then(|portable_type| portable_type.path.segments.get(index_type_app_crypto))
+			.and_then(|app_crypto| match app_crypto.as_str() {
+				"ed25519" => Some(AuraConsensusId::Ed25519),
+				"sr25519" => Some(AuraConsensusId::Sr25519),
+				_ => None,
+			})
 	}
 
 	fn fetch_metadata(chain_spec: &dyn ChainSpec) -> Result<Metadata, sc_cli::Error> {
@@ -203,6 +250,13 @@ mod tests {
 		let metadata_inspector = MetadataInspector(cumulus_test_runtime_metadata());
 		assert!(metadata_inspector.pallet_exists(DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME));
 		assert!(metadata_inspector.pallet_exists(DEFAULT_FRAME_SYSTEM_PALLET_NAME));
+		assert!(metadata_inspector.pallet_exists(DEFAULT_PALLET_AURA));
+	}
+
+	#[test]
+	fn test_runtime_block_number() {
+		let metadata_inspector = MetadataInspector(cumulus_test_runtime_metadata());
+		assert_eq!(metadata_inspector.block_number().unwrap(), BlockNumber::U32);
 	}
 
 	#[test]
