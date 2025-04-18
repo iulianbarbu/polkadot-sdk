@@ -106,9 +106,17 @@ pub struct DefaultRuntimeResolver;
 impl RuntimeResolver for DefaultRuntimeResolver {
 	fn runtime(&self, chain_spec: &dyn ChainSpec) -> sc_cli::Result<Runtime> {
 		let Ok(metadata_inspector) = MetadataInspector::new(chain_spec) else {
-			log::info!("Unable to inspect runtime's metadata. Skipping auto-configuration. Runtime's metadata inspection is supported for metadata versions v14 and higher. Returning with a best effort configuration: block number set to `u32` and app crypto type for AURA set to `Sr25519`.");
+			log::warn!("Unable to inspect runtime's metadata. Skipping auto-configuration. Runtime's metadata inspection is supported for metadata versions v14 and higher. Returning with a best effort configuration: block number set to `u32` and app crypto type for AURA set to `Sr25519`.");
 			return Ok(Runtime::Omni(BlockNumber::U32, Consensus::Aura(AuraConsensusId::Sr25519)))
 		};
+
+		if !metadata_inspector.pallet_exists(DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME) {
+			log::warn!(
+				r#"⚠️  The parachain system pallet (https://docs.rs/crate/cumulus-pallet-parachain-system/latest) is
+			   missing from the runtime’s metadata. Please check Omni Node docs for runtime conventions:
+			   https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html#runtime-conventions."#
+			);
+		}
 
 		let block_number = match metadata_inspector.block_number() {
 			Some(inner) => inner,
@@ -123,14 +131,6 @@ impl RuntimeResolver for DefaultRuntimeResolver {
 			},
 		};
 
-		if !metadata_inspector.pallet_exists(DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME) {
-			log::warn!(
-				r#"⚠️  The parachain system pallet (https://docs.rs/crate/cumulus-pallet-parachain-system/latest) is
-			   missing from the runtime’s metadata. Please check Omni Node docs for runtime conventions:
-			   https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html#runtime-conventions."#
-			);
-		}
-
 		if !metadata_inspector.pallet_exists(DEFAULT_PALLET_AURA) {
 			log::warn!(
 				r#"⚠️  Pallet AURA (https://docs.rs/crate/cumulus-pallet-parachain-system/latest) is
@@ -143,16 +143,16 @@ impl RuntimeResolver for DefaultRuntimeResolver {
 			Some(inner) => inner,
 			None => {
 				log::warn!(
-					r#"⚠️  There isn't a runtime type named `Authorities`, corresponding to `pallet-aura` authorities set
+					r#"⚠️  `pallet-aura`'s `Authorities` type can not be fetched from the metadata storage
 					(https://docs.rs/pallet-aura/latest/pallet_aura/pallet/type.Authorities.html). This indicates to a
-					corrupted pallet storage or incompatible metadata, but we default to `sr25519` as best effort. Please
+					corrupted storage or incompatible metadata, but we default to `sr25519` as best effort. Please
 					check Omni Node docs for runtime conventions:
 					https://paritytech.github.io/polkadot-sdk/master/polkadot_sdk_docs/reference_docs/omni_node/index.html#runtime-conventions."#
 				);
 				AuraConsensusId::Sr25519
 			},
 		};
-		log::info!("found app crypto: {:#?}", aura_app_crypto);
+
 		Ok(Runtime::Omni(block_number, Consensus::Aura(aura_app_crypto)))
 	}
 }
@@ -225,8 +225,8 @@ impl MetadataInspector {
 #[cfg(test)]
 mod tests {
 	use crate::runtime::{
-		BlockNumber, MetadataInspector, DEFAULT_FRAME_SYSTEM_PALLET_NAME,
-		DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME,
+		AuraConsensusId, BlockNumber, MetadataInspector, DEFAULT_FRAME_SYSTEM_PALLET_NAME,
+		DEFAULT_PALLET_AURA, DEFAULT_PARACHAIN_SYSTEM_PALLET_NAME,
 	};
 	use codec::Decode;
 	use cumulus_client_service::ParachainHostFunctions;
@@ -260,8 +260,8 @@ mod tests {
 	}
 
 	#[test]
-	fn test_runtime_block_number() {
+	fn test_runtime_app_crypto_type() {
 		let metadata_inspector = MetadataInspector(cumulus_test_runtime_metadata());
-		assert_eq!(metadata_inspector.block_number().unwrap(), BlockNumber::U32);
+		assert_eq!(metadata_inspector.aura_app_crypto_type().unwrap(), AuraConsensusId::Sr25519);
 	}
 }
