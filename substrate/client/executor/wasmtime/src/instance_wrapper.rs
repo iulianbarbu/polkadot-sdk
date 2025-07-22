@@ -181,6 +181,11 @@ impl InstanceWrapper {
 
 		Ok(heap_base as u32)
 	}
+
+	/// Return an unique id corresponding the to instance.
+	pub(crate) fn instance_id(&mut self) -> u64 {
+		self._release_instance_handle.instance_id()
+	}
 }
 
 /// Extract linear memory instance from the given instance.

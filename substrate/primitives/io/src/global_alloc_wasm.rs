@@ -78,7 +78,18 @@ static LOCAL_ALLOCATOR: LocalAllocator =
 	LocalAllocator(UnsafeCell::new(picoalloc::Allocator::new(RuntimeAllocator)));
 
 fn local_allocator() -> &'static mut picoalloc::Allocator<RuntimeAllocator> {
+	// crate::logging::log(
+	// 	sp_core::LogLevel::Debug,
+	// 	"runtime::io",
+	// 	"before enabling tracing".as_bytes(),
+	// );
 	crate::init_tracing();
+	sp_tracing::debug_span!(target: "runtime::io", "initialized tracing");
+	// crate::logging::log(
+	// 	sp_core::LogLevel::Debug,
+	// 	"runtime::io",
+	// 	"after enabling tracing".as_bytes(),
+	// );
 	// SAFETY: This is only called when allocating memory, and the allocator
 	// doesn't trigger the global allocator recursively, so only a single
 	// &mut will ever exist at the same time.
@@ -105,10 +116,6 @@ unsafe impl GlobalAlloc for RuntimeAllocator {
 		// Try to allocate memory from the local pool, and only fall back
 		// to the host allocator if this fails.
 		if let Some(pointer) = local_allocator().alloc(align, size) {
-			#[cfg(feature = "with-tracing")]
-			sp_tracing::within_span! {
-				sp_tracing::debug_span!("alloc");
-			};
 			pointer.as_ptr()
 		} else {
 			crate::global_alloc_wasm_legacy::HostAllocator.alloc(layout)
@@ -119,10 +126,6 @@ unsafe impl GlobalAlloc for RuntimeAllocator {
 		if is_local_pointer(ptr) {
 			// SAFETY: We've checked that the pointer is from the local allocator.
 			unsafe { local_allocator().free(NonNull::new_unchecked(ptr)) }
-			#[cfg(feature = "with-tracing")]
-			sp_tracing::within_span! {
-				sp_tracing::debug_span!("dealloc");
-			};
 		} else {
 			crate::global_alloc_wasm_legacy::HostAllocator.dealloc(ptr)
 		}
@@ -141,10 +144,6 @@ unsafe impl GlobalAlloc for RuntimeAllocator {
 		// smart enough to not unnecessarily zero-fill the memory if it's
 		// the very first allocation which touches this region of the heap.
 		if let Some(pointer) = local_allocator().alloc_zeroed(align, size) {
-			#[cfg(feature = "with-tracing")]
-			sp_tracing::within_span! {
-				sp_tracing::debug_span!("alloc_zeroed");
-			};
 			return pointer.as_ptr();
 		}
 
@@ -177,10 +176,6 @@ unsafe impl GlobalAlloc for RuntimeAllocator {
 			if let Some(pointer) =
 				unsafe { local_allocator().realloc(NonNull::new_unchecked(ptr), align, new_size_s) }
 			{
-				#[cfg(feature = "with-tracing")]
-				sp_tracing::within_span! {
-					sp_tracing::debug_span!("realloc");
-				};
 				return pointer.as_ptr();
 			}
 		}

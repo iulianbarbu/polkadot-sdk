@@ -37,7 +37,7 @@ use sp_wasm_interface::{HostFunctions, Pointer, WordSize};
 use std::{
 	path::{Path, PathBuf},
 	sync::{
-		atomic::{AtomicBool, Ordering},
+		atomic::{AtomicBool, AtomicU64, Ordering},
 		Arc,
 	},
 };
@@ -88,6 +88,12 @@ pub(crate) struct ReleaseInstanceHandle {
 	counter: Arc<InstanceCounter>,
 }
 
+impl ReleaseInstanceHandle {
+	pub fn instance_id(&self) -> u64 {
+		self.counter.instance_id()
+	}
+}
+
 impl Drop for ReleaseInstanceHandle {
 	fn drop(&mut self) {
 		{
@@ -99,15 +105,17 @@ impl Drop for ReleaseInstanceHandle {
 	}
 }
 
-/// Keeps track on the number of parallel instances.
+/// Keeps track on the number of parallel instances and total unique invocations.
 ///
 /// The runtime cache keeps track on the number of parallel instances. The maximum number in the
 /// cache is less than what we have configured as [`MAX_INSTANCE_COUNT`] for wasmtime. However, the
-/// cache will create on demand instances if required. This instance counter will ensure that we are
-/// blocking when we are trying to create too many instances.
+/// cache will create on demand instances if required and at that time it will also increment the
+/// instance id to keep the number of unique invocations in total. This instance counter will ensure
+/// that we are blocking when we are trying to create too many instances.
 #[derive(Default)]
 pub(crate) struct InstanceCounter {
 	counter: Mutex<u32>,
+	instance_id: AtomicU64,
 	wait_for_instance: parking_lot::Condvar,
 }
 
@@ -123,10 +131,16 @@ impl InstanceCounter {
 
 		while *counter >= MAX_INSTANCE_COUNT {
 			self.wait_for_instance.wait(&mut counter);
+			self.instance_id.fetch_add(1, Ordering::Relaxed);
 		}
+
 		*counter += 1;
 
 		ReleaseInstanceHandle { counter: self.clone() }
+	}
+
+	pub fn instance_id(&self) -> u64 {
+		self.instance_id.load(Ordering::Relaxed)
 	}
 }
 
@@ -715,6 +729,8 @@ fn inject_input_data(
 	let memory = ctx.data().memory();
 	let data_len = data.len() as WordSize;
 	let data_ptr = allocator.allocate(&mut MemoryWrapper(&memory, &mut ctx), data_len)?;
+	let instance_id = instance.instance_id();
+	log::debug!(target: "wasm-executor", "Host allocation trace: instance_id={instance_id}, inject_input_data size={data_len}, data_ptr=0x{data_ptr}");
 	util::write_memory_from(instance.store_mut(), data_ptr, data)?;
 	Ok((data_ptr, data_len))
 }
