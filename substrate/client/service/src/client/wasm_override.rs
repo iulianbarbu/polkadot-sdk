@@ -38,7 +38,10 @@
 
 use sc_executor::RuntimeVersionOf;
 use sp_blockchain::Result;
-use sp_core::traits::{FetchRuntimeCode, RuntimeCode, WrappedRuntimeCode};
+use sp_core::{
+	hexdisplay::HexDisplay,
+	traits::{FetchRuntimeCode, RuntimeCode, WrappedRuntimeCode},
+};
 use sp_state_machine::BasicExternalities;
 use sp_version::RuntimeVersion;
 use std::{
@@ -193,6 +196,7 @@ impl WasmOverride {
 				tracing::info!(
 					target: "wasm_overrides",
 					version = %version,
+					code_hash = %HexDisplay::from(&code_hash),
 					file = %path.display(),
 					"Found wasm override.",
 				);

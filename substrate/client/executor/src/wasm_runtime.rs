@@ -35,6 +35,7 @@ use sp_version::RuntimeVersion;
 use sp_wasm_interface::HostFunctions;
 
 use std::{
+	hash::Hash,
 	panic::AssertUnwindSafe,
 	path::{Path, PathBuf},
 	sync::Arc,
@@ -261,9 +262,10 @@ impl RuntimeCache {
 				Ok(ref result) => {
 					tracing::debug!(
 						target: "wasm-runtime",
-						"Prepared new runtime version {:?} in {} ms.",
+						"prepared new runtime version {:?} in {} ms, code hash: {:x?}",
 						result.version,
 						time.elapsed().as_millis(),
+						runtime_code.hash.as_slice()
 					);
 				},
 				Err(ref err) => {

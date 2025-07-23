@@ -182,9 +182,14 @@ impl InstanceWrapper {
 		Ok(heap_base as u32)
 	}
 
-	/// Return an unique id corresponding the to instance.
-	pub(crate) fn instance_id(&mut self) -> u64 {
+	/// Returns an unique id corresponding the to instance.
+	pub(crate) fn id(&mut self) -> u64 {
 		self._release_instance_handle.instance_id()
+	}
+
+	/// Returns wasm blob code's blake2_256 hash.
+	pub(crate) fn code_hash(&mut self) -> Vec<u8> {
+		self._release_instance_handle.code_hash()
 	}
 }
 

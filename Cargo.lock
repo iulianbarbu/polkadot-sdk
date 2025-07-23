@@ -19746,6 +19746,7 @@ dependencies = [
 name = "sc-executor-common"
 version = "0.36.0"
 dependencies = [
+ "log",
  "polkavm 0.9.3",
  "sc-allocator 30.0.0",
  "sp-maybe-compressed-blob 11.0.0",
@@ -19812,6 +19813,7 @@ dependencies = [
  "sc-executor-common 0.36.0",
  "sc-runtime-test",
  "sp-io 39.0.1",
+ "sp-maybe-compressed-blob 11.0.0",
  "sp-runtime-interface 29.0.0",
  "sp-wasm-interface 21.0.1",
  "tempfile",

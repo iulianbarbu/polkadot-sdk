@@ -37,6 +37,7 @@ sc-executor-common.workspace = true
 sc-executor-common.default-features = true
 sp-runtime-interface.workspace = true
 sp-runtime-interface.default-features = true
+sp-maybe-compressed-blob.workspace = true
 sp-wasm-interface = { features = ["wasmtime"], workspace = true, default-features = true }
 
 # Here we include the rustix crate in the exactly same semver-compatible version as used by
