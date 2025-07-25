@@ -29,7 +29,7 @@ use sc_allocator::{AllocationStats, FreeingBumpHeapAllocator};
 use sc_executor_common::{
 	error::{Error, Result, WasmError},
 	runtime_blob::RuntimeBlob,
-	util::{checked_range, make_hash},
+	util::checked_range,
 	wasm_runtime::{HeapAllocStrategy, WasmInstance, WasmModule},
 };
 use sp_runtime_interface::unpack_ptr_and_len;
@@ -125,6 +125,13 @@ pub(crate) struct InstanceCounter {
 }
 
 impl InstanceCounter {
+	/// Initialize an instance counter with a given code hash.
+	pub fn new(code_hash: Vec<u8>) -> Self {
+		let mut instance_counter = InstanceCounter::default();
+		instance_counter.code_hash = code_hash;
+		instance_counter
+	}
+
 	/// Acquire an instance.
 	///
 	/// Blocks if there is no free instance available.
@@ -152,12 +159,6 @@ impl InstanceCounter {
 	/// Returns the underlying runtime blob hash.
 	pub fn code_hash(&self) -> Vec<u8> {
 		self.code_hash.clone()
-	}
-
-	pub fn with_code_hash(code_hash: Vec<u8>) -> Self {
-		let mut instance_counter = InstanceCounter::default();
-		instance_counter.code_hash = code_hash;
-		instance_counter
 	}
 }
 
@@ -617,15 +618,10 @@ where
 	let engine = Engine::new(&wasmtime_config)
 		.map_err(|e| WasmError::Other(format!("cannot create the wasmtime engine: {:#}", e)))?;
 
-	let (hash, module, instantiation_strategy) = match code_supply_mode {
+	let (instance_counter, module, instantiation_strategy) = match code_supply_mode {
 		CodeSupplyMode::Fresh(blob) => {
 			let blob = prepare_blob_for_compilation(blob, &config.semantics)?;
 			let serialized_blob = blob.clone().serialize();
-			let compressed = sp_maybe_compressed_blob::compress(
-				&serialized_blob,
-				sp_maybe_compressed_blob::CODE_BLOB_BOMB_LIMIT,
-			)
-			.unwrap_or(Vec::new());
 
 			let module = wasmtime::Module::new(&engine, &serialized_blob)
 				.map_err(|e| WasmError::Other(format!("cannot create module: {:#}", e)))?;
@@ -634,8 +630,13 @@ where
 				InstantiationStrategy::Pooling |
 				InstantiationStrategy::PoolingCopyOnWrite |
 				InstantiationStrategy::RecreateInstance |
-				InstantiationStrategy::RecreateInstanceCopyOnWrite =>
-					(compressed, module, InternalInstantiationStrategy::Builtin),
+				InstantiationStrategy::RecreateInstanceCopyOnWrite => (
+					blob.code_hash()
+						.map(|code_hash| InstanceCounter::new(code_hash))
+						.unwrap_or(InstanceCounter::default()),
+					module,
+					InternalInstantiationStrategy::Builtin,
+				),
 			}
 		},
 		CodeSupplyMode::Precompiled(compiled_artifact_path) => {
@@ -646,7 +647,7 @@ where
 			let module = wasmtime::Module::deserialize_file(&engine, compiled_artifact_path)
 				.map_err(|e| WasmError::Other(format!("cannot deserialize module: {:#}", e)))?;
 
-			(Vec::new(), module, InternalInstantiationStrategy::Builtin)
+			(InstanceCounter::default(), module, InternalInstantiationStrategy::Builtin)
 		},
 		CodeSupplyMode::PrecompiledBytes(compiled_artifact_bytes) => {
 			// SAFETY: The unsafety of `deserialize` is covered by this function. The
@@ -656,7 +657,7 @@ where
 			let module = wasmtime::Module::deserialize(&engine, compiled_artifact_bytes)
 				.map_err(|e| WasmError::Other(format!("cannot deserialize module: {:#}", e)))?;
 
-			(Vec::new(), module, InternalInstantiationStrategy::Builtin)
+			(InstanceCounter::default(), module, InternalInstantiationStrategy::Builtin)
 		},
 	};
 
@@ -671,7 +672,7 @@ where
 		engine,
 		instance_pre: Arc::new(instance_pre),
 		instantiation_strategy,
-		instance_counter: InstanceCounter::with_code_hash(make_hash(&hash)).into(),
+		instance_counter: instance_counter.into(),
 	})
 }
 
@@ -720,8 +721,9 @@ fn perform_call(
 	allocation_stats: &mut Option<AllocationStats>,
 ) -> Result<Vec<u8>> {
 	let (data_ptr, data_len) = inject_input_data(instance_wrapper, &mut allocator, data)?;
-
-	let host_state = HostState::new(allocator);
+	let instance_id = instance_wrapper.id();
+	let code_hash = instance_wrapper.code_hash();
+	let host_state = HostState::new(allocator, instance_id, code_hash);
 
 	// Set the host state before calling into wasm.
 	instance_wrapper.store_mut().data_mut().host_state = Some(host_state);
@@ -755,7 +757,7 @@ fn inject_input_data(
 	let instance_hash = instance.code_hash();
 	let display_data_ptr = u64::from(data_ptr);
 
-	log::debug!(target: "wasm-executor", "Host allocation trace: code_hash={instance_hash:x?} instance_id={instance_id}, inject_input_data size={data_len}, data_ptr=0x{display_data_ptr:x}");
+	log::debug!(target: "runtime_host_allocator", "Host allocation trace: code_hash={instance_hash:x?} instance_id={instance_id}, inject_input_data size={data_len}, data_ptr=0x{display_data_ptr:x}");
 
 	util::write_memory_from(instance.store_mut(), data_ptr, data)?;
 	Ok((data_ptr, data_len))

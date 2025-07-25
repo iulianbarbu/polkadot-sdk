@@ -235,7 +235,6 @@ impl RuntimeCache {
 		) -> Result<R, Error>,
 	{
 		let code_hash = &runtime_code.hash;
-
 		let versioned_runtime_id =
 			VersionedRuntimeId { code_hash: code_hash.clone(), heap_alloc_strategy, wasm_method };
 
@@ -245,7 +244,6 @@ impl RuntimeCache {
 			versioned_runtime.clone()
 		} else {
 			let code = runtime_code.fetch_runtime_code().ok_or(WasmError::CodeNotFound)?;
-
 			let time = std::time::Instant::now();
 
 			let result = create_versioned_wasm_runtime::<H>(

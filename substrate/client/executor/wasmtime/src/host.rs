@@ -36,13 +36,15 @@ pub struct HostState {
 	/// allocating/deallocating memory. The problem being that we can only mutable access `caller`
 	/// once.
 	allocator: Option<FreeingBumpHeapAllocator>,
+	code_hash: Vec<u8>,
+	instance_id: u64,
 	panic_message: Option<String>,
 }
 
 impl HostState {
 	/// Constructs a new `HostState`.
-	pub fn new(allocator: FreeingBumpHeapAllocator) -> Self {
-		HostState { allocator: Some(allocator), panic_message: None }
+	pub fn new(allocator: FreeingBumpHeapAllocator, instance_id: u64, code_hash: Vec<u8>) -> Self {
+		HostState { allocator: Some(allocator), panic_message: None, instance_id, code_hash }
 	}
 
 	/// Takes the error message out of the host state, leaving a `None` in its place.
@@ -93,14 +95,19 @@ impl<'a> sp_wasm_interface::FunctionContext for HostContext<'a> {
 			.allocator
 			.take()
 			.expect("allocator is not empty when calling a function in wasm; qed");
+		let instance_id = self.host_state_mut().instance_id;
+		let code_hash = self.host_state_mut().code_hash.clone();
 
 		// We can not return on error early, as we need to store back allocator.
 		let res = allocator
 			.allocate(&mut MemoryWrapper(&memory, &mut self.caller), size)
+			.inspect(|ptr| {
+				let display_ptr = u64::from(*ptr);
+				log::debug!(target: "runtime_host_allocator", "allocation: code_hash={code_hash:x?} instance_id={instance_id}, size={size}, data_ptr=0x{display_ptr:x}");
+			})
 			.map_err(|e| e.to_string());
 
 		self.host_state_mut().allocator = Some(allocator);
-
 		res
 	}
 
@@ -111,10 +118,16 @@ impl<'a> sp_wasm_interface::FunctionContext for HostContext<'a> {
 			.allocator
 			.take()
 			.expect("allocator is not empty when calling a function in wasm; qed");
+		let instance_id = self.host_state_mut().instance_id;
+		let code_hash = self.host_state_mut().code_hash.clone();
 
 		// We can not return on error early, as we need to store back allocator.
 		let res = allocator
 			.deallocate(&mut MemoryWrapper(&memory, &mut self.caller), ptr)
+			.inspect(|_| {
+				let display_ptr = u64::from(ptr);
+				log::debug!(target: "runtime_host_allocator", "deallocation: code_hash={code_hash:x?} instance_id={instance_id}, data_ptr=0x{display_ptr:x}");
+			})
 			.map_err(|e| e.to_string());
 
 		self.host_state_mut().allocator = Some(allocator);

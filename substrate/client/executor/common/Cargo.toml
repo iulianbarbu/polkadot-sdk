@@ -17,7 +17,12 @@ workspace = true
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-log = { workspace = true }
+sc-allocator.workspace = true
+sp-crypto-hashing = { workspace = true }
+sp-maybe-compressed-blob.default-features = true
+sp-maybe-compressed-blob.workspace = true
+sp-wasm-interface.default-features = true
+sp-wasm-interface.workspace = true
 thiserror = { workspace = true }
 wasm-instrument = { workspace = true, default-features = true }
 sc-allocator.workspace = true
@@ -26,7 +31,6 @@ sp-maybe-compressed-blob.workspace = true
 sp-maybe-compressed-blob.default-features = true
 sp-wasm-interface.workspace = true
 sp-wasm-interface.default-features = true
-polkavm = { workspace = true }
 
 [features]
 default = []
