@@ -143,10 +143,10 @@ impl InstanceCounter {
 
 		while *counter >= MAX_INSTANCE_COUNT {
 			self.wait_for_instance.wait(&mut counter);
-			self.instance_id.fetch_add(1, Ordering::Relaxed);
 		}
 
 		*counter += 1;
+		self.instance_id.fetch_add(1, Ordering::Relaxed);
 
 		ReleaseInstanceHandle { counter: self.clone() }
 	}
