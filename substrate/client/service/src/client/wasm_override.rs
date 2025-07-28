@@ -39,8 +39,8 @@
 use sc_executor::RuntimeVersionOf;
 use sp_blockchain::Result;
 use sp_core::{
-	hexdisplay::HexDisplay,
 	traits::{FetchRuntimeCode, RuntimeCode, WrappedRuntimeCode},
+	Hasher,
 };
 use sp_state_machine::BasicExternalities;
 use sp_version::RuntimeVersion;
@@ -191,12 +191,13 @@ impl WasmOverride {
 			let path = entry.path();
 			if let Some("wasm") = path.extension().and_then(|e| e.to_str()) {
 				let code = fs::read(&path).map_err(handle_err)?;
-				let code_hash = sp_core::Blake2Hasher::hash(&code);
+				let code_hash = make_hash(&code);
+				let code_hash_blake = sp_core::Blake2Hasher::hash(&code);
 				let version = Self::runtime_version(executor, &code, &code_hash, Some(128))?;
 				tracing::info!(
 					target: "wasm_overrides",
 					version = %version,
-					code_hash = %HexDisplay::from(&code_hash),
+					code_hash = ?code_hash_blake,
 					file = %path.display(),
 					"Found wasm override.",
 				);
