@@ -19746,9 +19746,8 @@ dependencies = [
 name = "sc-executor-common"
 version = "0.36.0"
 dependencies = [
- "log",
- "polkavm 0.9.3",
  "sc-allocator 30.0.0",
+ "sp-crypto-hashing 0.1.0",
  "sp-maybe-compressed-blob 11.0.0",
  "sp-wasm-interface 21.0.1",
  "thiserror 1.0.69",
