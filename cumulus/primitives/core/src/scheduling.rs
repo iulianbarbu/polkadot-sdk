@@ -16,7 +16,7 @@
 //!
 //! For resubmission, `signed_scheduling_info` must be provided. The resubmitting
 //! collator signs the core selection, proving they are the eligible author for the
-//! slot derived from the `internal_scheduling_parent`.
+//! slot derived from the `eligibility_parent`.
 
 use alloc::vec::Vec;
 use codec::{Decode, DecodeWithMemTracking, Encode, MaxEncodedLen};
@@ -53,7 +53,7 @@ pub struct Multihash {
 
 /// Payload signed by a collator for resubmission.
 ///
-/// This binds the core selection to a specific internal scheduling parent,
+/// This binds the core selection to a specific eligibility parent,
 /// preventing replay attacks across different scheduling contexts.
 ///
 /// Note: `claim_queue_offset` is NOT included because it's derived from the
@@ -62,16 +62,16 @@ pub struct Multihash {
 pub struct SchedulingInfoPayload {
 	/// Which core to use (indexes into the parachain's assigned cores).
 	pub core_selector: CoreSelector,
-	/// The internal scheduling parent whom's slot decides the
+	/// The eligibility parent whose slot decides the
 	/// eligible block author that must sign the payload.
-	pub internal_scheduling_parent: polkadot_primitives::Hash,
+	pub eligibility_parent: polkadot_primitives::Hash,
 }
 
 /// Signed scheduling information for candidate resubmission.
 ///
 /// When a collator resubmits a candidate (with a newer `scheduling_parent` but same
 /// `relay_parent`), they must sign the core selection to prove eligibility for the
-/// slot at `internal_scheduling_parent`.
+/// slot at `eligibility_parent`.
 ///
 /// The `claim_queue_offset` is derived from the runtime's `relay_parent_offset`
 /// configuration and is not part of this struct - it cannot be overridden by the
@@ -85,8 +85,8 @@ pub struct SignedSchedulingInfo {
 	/// resubmitting collator to receive reputation instead of the original
 	/// block author who failed to deliver.
 	pub peer_id: Multihash,
-	/// Signature by the eligible collator for the slot at `internal_scheduling_parent`.
-	/// Signs `SchedulingInfoPayload(core_selector, internal_scheduling_parent)`.
+	/// Signature by the eligible collator for the slot at `eligibility_parent`.
+	/// Signs `SchedulingInfoPayload(core_selector, eligibility_parent)`.
 	pub signature: CollatorSignature,
 }
 
@@ -95,17 +95,17 @@ impl SignedSchedulingInfo {
 	///
 	/// # Arguments
 	/// * `expected_collator` - The collator ID that should have signed this
-	/// * `internal_scheduling_parent` - The internal scheduling parent hash
+	/// * `eligibility_parent` - The eligibility parent hash
 	///
 	/// # Returns
 	/// `true` if the signature is valid for the expected collator.
 	pub fn verify(
 		&self,
 		expected_collator: &CollatorId,
-		internal_scheduling_parent: polkadot_primitives::Hash,
+		eligibility_parent: polkadot_primitives::Hash,
 	) -> bool {
 		let payload =
-			SchedulingInfoPayload { core_selector: self.core_selector, internal_scheduling_parent };
+			SchedulingInfoPayload { core_selector: self.core_selector, eligibility_parent };
 		let encoded = payload.encode();
 		self.signature.verify(encoded.as_slice(), expected_collator)
 	}
@@ -115,9 +115,9 @@ impl SchedulingInfoPayload {
 	/// Create a new scheduling info payload.
 	pub fn new(
 		core_selector: CoreSelector,
-		internal_scheduling_parent: polkadot_primitives::Hash,
+		eligibility_parent: polkadot_primitives::Hash,
 	) -> Self {
-		Self { core_selector, internal_scheduling_parent }
+		Self { core_selector, eligibility_parent }
 	}
 }
 
@@ -132,22 +132,22 @@ pub struct SchedulingProof {
 	///
 	/// Forms a chain where each header's parent_hash equals the next header's hash.
 	/// The first header's hash must equal the candidate's scheduling_parent.
-	/// The last header's parent_hash is the internal scheduling parent.
+	/// The last header's parent_hash is the eligibility parent.
 	/// Length is defined by the parachain runtime config (RelayParentOffset).
 	pub header_chain: Vec<RelayChainHeader>,
 	/// Signed scheduling info for core selection override.
 	///
-	/// - `None` with `relay_parent == internal_scheduling_parent`: Initial submission. Core
+	/// - `None` with `relay_parent == eligibility_parent`: Initial submission. Core
 	///   selection comes from the parachain block's UMP signals.
 	///
-	/// - `Some` with `relay_parent == internal_scheduling_parent`: Initial submission with
+	/// - `Some` with `relay_parent == eligibility_parent`: Initial submission with
 	///   explicit core selection. This is optional but legal. Collators should refuse to
 	///   acknowledge blocks with invalid scheduling info, so providing a signature is not required
 	///   for initial submissions.
 	///
-	/// - `Some` with `relay_parent != internal_scheduling_parent`: Resubmission (required). The
+	/// - `Some` with `relay_parent != eligibility_parent`: Resubmission (required). The
 	///   resubmitting collator signs the core selection, overriding the block's UMP signals.
 	///   Signature is verified against the eligible author for the slot at
-	///   `internal_scheduling_parent`.
+	///   `eligibility_parent`.
 	pub signed_scheduling_info: Option<SignedSchedulingInfo>,
 }

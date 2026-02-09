@@ -4,8 +4,8 @@
 
 //! Scheduling validation for V3 candidates.
 //!
-//! Validates the header chain from scheduling_parent to internal_scheduling_parent,
-//! and verifies relay_parent is at or before internal_scheduling_parent.
+//! Validates the header chain from scheduling_parent to eligibility_parent,
+//! and verifies relay_parent is at or before eligibility_parent.
 
 use cumulus_primitives_core::SchedulingProof;
 use sp_runtime::traits::{BlakeTwo256, Hash as HashT, Header as HeaderT};
@@ -22,12 +22,12 @@ pub enum SchedulingValidationError {
     BrokenHeaderChain { index: usize },
     /// First header hash does not match scheduling_parent.
     SchedulingParentMismatch,
-    /// relay_parent is within the header chain but not at internal_scheduling_parent.
-    /// For resubmission, relay_parent must be an ancestor of internal_scheduling_parent.
+    /// relay_parent is within the header chain but not at eligibility_parent.
+    /// For resubmission, relay_parent must be an ancestor of eligibility_parent.
     RelayParentInHeaderChain,
 
     /// Resubmission is missing required signed_scheduling_info.
-    /// When relay_parent != internal_scheduling_parent, the resubmitting collator must
+    /// When relay_parent != eligibility_parent, the resubmitting collator must
     /// sign the core selection to prove slot eligibility.
     MissingSignedSchedulingInfo,
     /// Signature verification failed for resubmission.
@@ -38,9 +38,9 @@ pub enum SchedulingValidationError {
 /// Result of successful scheduling validation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SchedulingValidationResult {
-    /// The internal scheduling parent (derived from header chain).
-    pub internal_scheduling_parent: RelayHash,
-    /// Whether this is a resubmission (relay_parent != internal_scheduling_parent).
+    /// The eligibility parent (derived from header chain).
+    pub eligibility_parent: RelayHash,
+    /// Whether this is a resubmission (relay_parent != eligibility_parent).
     pub is_resubmission: bool,
 }
 
@@ -49,17 +49,17 @@ pub struct SchedulingValidationResult {
 /// This function:
 /// 1. Verifies the header chain has the expected fixed length
 /// 2. Verifies headers form a valid chain starting at scheduling_parent
-/// 3. Derives internal_scheduling_parent from the header chain
+/// 3. Derives eligibility_parent from the header chain
 /// 4. Validates relay_parent position and signed_scheduling_info presence
 ///
 /// # relay_parent validation
 ///
 /// The relay_parent must either:
-/// - Equal internal_scheduling_parent (initial submission, no signature required)
-/// - Be an ancestor of internal_scheduling_parent (resubmission, signature required)
+/// - Equal eligibility_parent (initial submission, no signature required)
+/// - Be an ancestor of eligibility_parent (resubmission, signature required)
 ///
 /// relay_parent must NOT be within the header chain itself (between scheduling_parent
-/// and internal_scheduling_parent), as that would indicate an invalid resubmission.
+/// and eligibility_parent), as that would indicate an invalid resubmission.
 ///
 /// # Arguments
 /// * `scheduling_proof` - The scheduling proof from POV (ParachainBlockData::V2)
@@ -100,19 +100,19 @@ pub fn validate_scheduling(
         }
     }
 
-    // 3. Derive internal_scheduling_parent
+    // 3. Derive eligibility_parent
     // It's the parent_hash of the last (oldest) header in the chain
-    let internal_scheduling_parent = if header_chain.is_empty() {
-        // If header chain is empty (length 0), internal_scheduling_parent == scheduling_parent
+    let eligibility_parent = if header_chain.is_empty() {
+        // If header chain is empty (length 0), eligibility_parent == scheduling_parent
         scheduling_parent
     } else {
         *header_chain.last().expect("checked non-empty").parent_hash()
     };
 
     // 4. Validate relay_parent position
-    // relay_parent must NOT be inside the header chain (it can equal internal_scheduling_parent
+    // relay_parent must NOT be inside the header chain (it can equal eligibility_parent
     // or be an ancestor of it, but not somewhere between scheduling_parent and
-    // internal_scheduling_parent)
+    // eligibility_parent)
     for header in header_chain.iter() {
         let header_hash = BlakeTwo256::hash_of(header);
         if relay_parent == header_hash {
@@ -121,24 +121,24 @@ pub fn validate_scheduling(
     }
 
     // 5. Validate signed_scheduling_info based on relay_parent position
-    let is_initial_submission = relay_parent == internal_scheduling_parent;
+    let is_initial_submission = relay_parent == eligibility_parent;
 
     if !is_initial_submission {
-        // Resubmission: relay_parent is an ancestor of internal_scheduling_parent.
+        // Resubmission: relay_parent is an ancestor of eligibility_parent.
         // The resubmitting collator must sign the core selection.
         if scheduling_proof.signed_scheduling_info.is_none() {
             return Err(SchedulingValidationError::MissingSignedSchedulingInfo);
         }
         // Signature verification is done separately after slot/authority lookup
     }
-    // Note: For initial submission (relay_parent == internal_scheduling_parent),
+    // Note: For initial submission (relay_parent == eligibility_parent),
     // signed_scheduling_info is optional. If absent, core selection comes from the
     // block's UMP signals. If present, signature verification is still performed.
     // Collators should refuse to acknowledge blocks with invalid scheduling info,
     // so providing signed_scheduling_info is not necessary but is legal.
 
     Ok(SchedulingValidationResult {
-        internal_scheduling_parent,
+        eligibility_parent,
         is_resubmission: !is_initial_submission,
     })
 }
@@ -152,16 +152,16 @@ pub fn validate_scheduling(
 /// # Arguments
 /// * `signed_scheduling_info` - The signed scheduling info from the proof
 /// * `expected_collator` - The eligible collator for the slot (from `slot % authorities.len()`)
-/// * `internal_scheduling_parent` - The internal scheduling parent hash
+/// * `eligibility_parent` - The eligibility parent hash
 ///
 /// # Returns
 /// `Ok(())` if the signature is valid, `Err(InvalidSignature)` otherwise.
 pub fn verify_resubmission_signature(
     signed_scheduling_info: &cumulus_primitives_core::SignedSchedulingInfo,
     expected_collator: &cumulus_primitives_core::relay_chain::CollatorId,
-    internal_scheduling_parent: RelayHash,
+    eligibility_parent: RelayHash,
 ) -> Result<(), SchedulingValidationError> {
-    if signed_scheduling_info.verify(expected_collator, internal_scheduling_parent) {
+    if signed_scheduling_info.verify(expected_collator, eligibility_parent) {
         Ok(())
     } else {
         Err(SchedulingValidationError::InvalidSignature)
@@ -232,8 +232,8 @@ mod tests {
         let result = validate_scheduling(&proof, relay_parent, scheduling_parent, 3);
 
         assert!(result.is_ok());
-        // internal_scheduling_parent should equal relay_parent for valid chains
-        assert_eq!(result.unwrap().internal_scheduling_parent, relay_parent);
+        // eligibility_parent should equal relay_parent for valid chains
+        assert_eq!(result.unwrap().eligibility_parent, relay_parent);
     }
 
     #[test]
@@ -246,7 +246,7 @@ mod tests {
         let result = validate_scheduling(&proof, relay_parent, scheduling_parent, 0);
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().internal_scheduling_parent, scheduling_parent);
+        assert_eq!(result.unwrap().eligibility_parent, scheduling_parent);
     }
 
     #[test]
@@ -259,7 +259,7 @@ mod tests {
         let result = validate_scheduling(&proof, relay_parent, scheduling_parent, 1);
 
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().internal_scheduling_parent, relay_parent);
+        assert_eq!(result.unwrap().eligibility_parent, relay_parent);
     }
 
     // =========================================================================
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn reject_relay_parent_inside_header_chain() {
         // Test: relay_parent must not be one of the headers in the chain.
-        // It should either equal internal_scheduling_parent or be an ancestor of it.
+        // It should either equal eligibility_parent or be an ancestor of it.
         let (headers, _correct_relay_parent) = make_header_chain(3);
         let scheduling_parent = BlakeTwo256::hash_of(&headers[0]);
         // Use the middle header's hash as relay_parent (invalid)
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn initial_submission_allows_signed_scheduling_info() {
-        // Test: Initial submission (relay_parent == internal_scheduling_parent) may
+        // Test: Initial submission (relay_parent == eligibility_parent) may
         // optionally include signed_scheduling_info. This is legal because collators
         // should refuse to acknowledge blocks with invalid scheduling info anyway.
         let (headers, relay_parent) = make_header_chain(3);
@@ -397,9 +397,9 @@ mod tests {
 
     #[test]
     fn reject_resubmission_without_signed_scheduling_info() {
-        // Test: Resubmission (relay_parent != internal_scheduling_parent) requires
+        // Test: Resubmission (relay_parent != eligibility_parent) requires
         // signed_scheduling_info to prove the resubmitting collator's eligibility.
-        let (headers, _internal_scheduling_parent) = make_header_chain(3);
+        let (headers, _eligibility_parent) = make_header_chain(3);
         let scheduling_parent = BlakeTwo256::hash_of(&headers[0]);
         // Use an unrelated hash as relay_parent (simulates resubmission)
         let older_relay_parent = RelayHash::repeat_byte(0xBB);
@@ -414,10 +414,10 @@ mod tests {
     fn valid_resubmission_with_signed_scheduling_info() {
         // Test: Resubmission with signed_scheduling_info passes validation
         // (signature verification happens separately).
-        let (headers, internal_scheduling_parent) = make_header_chain(3);
+        let (headers, eligibility_parent) = make_header_chain(3);
         let scheduling_parent = BlakeTwo256::hash_of(&headers[0]);
         // Use an unrelated hash as relay_parent (simulates resubmission where
-        // relay_parent is an ancestor of internal_scheduling_parent)
+        // relay_parent is an ancestor of eligibility_parent)
         let older_relay_parent = RelayHash::repeat_byte(0xBB);
 
         let signed_info = SignedSchedulingInfo {
@@ -436,7 +436,7 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(result.is_resubmission);
-        assert_eq!(result.internal_scheduling_parent, internal_scheduling_parent);
+        assert_eq!(result.eligibility_parent, eligibility_parent);
     }
 
     #[test]
@@ -451,7 +451,7 @@ mod tests {
         assert!(result.is_ok());
         let result = result.unwrap();
         assert!(!result.is_resubmission);
-        assert_eq!(result.internal_scheduling_parent, relay_parent);
+        assert_eq!(result.eligibility_parent, relay_parent);
     }
 
     // =========================================================================
@@ -464,14 +464,14 @@ mod tests {
         use cumulus_primitives_core::SchedulingInfoPayload;
         use sp_core::Pair;
 
-        let internal_scheduling_parent = RelayHash::repeat_byte(0x42);
+        let eligibility_parent = RelayHash::repeat_byte(0x42);
 
         // Create a keypair and derive the collator ID
         let keypair = sp_core::sr25519::Pair::from_seed(&[1u8; 32]);
         let collator_id: cumulus_primitives_core::relay_chain::CollatorId = keypair.public().into();
 
         // Create the payload and sign it
-        let payload = SchedulingInfoPayload::new(CoreSelector(1), internal_scheduling_parent);
+        let payload = SchedulingInfoPayload::new(CoreSelector(1), eligibility_parent);
         let signature: CollatorSignature = keypair.sign(&payload.encode()).into();
 
         let signed_info = SignedSchedulingInfo {
@@ -481,7 +481,7 @@ mod tests {
         };
 
         let result =
-            verify_resubmission_signature(&signed_info, &collator_id, internal_scheduling_parent);
+            verify_resubmission_signature(&signed_info, &collator_id, eligibility_parent);
         assert!(result.is_ok());
     }
 
@@ -491,7 +491,7 @@ mod tests {
         use cumulus_primitives_core::SchedulingInfoPayload;
         use sp_core::Pair;
 
-        let internal_scheduling_parent = RelayHash::repeat_byte(0x42);
+        let eligibility_parent = RelayHash::repeat_byte(0x42);
 
         // Create keypair for signing
         let signing_keypair = sp_core::sr25519::Pair::from_seed(&[1u8; 32]);
@@ -502,7 +502,7 @@ mod tests {
             expected_keypair.public().into();
 
         // Sign with the wrong key
-        let payload = SchedulingInfoPayload::new(CoreSelector(1), internal_scheduling_parent);
+        let payload = SchedulingInfoPayload::new(CoreSelector(1), eligibility_parent);
         let signature: CollatorSignature = signing_keypair.sign(&payload.encode()).into();
 
         let signed_info = SignedSchedulingInfo {
@@ -512,13 +512,13 @@ mod tests {
         };
 
         let result =
-            verify_resubmission_signature(&signed_info, &expected_collator, internal_scheduling_parent);
+            verify_resubmission_signature(&signed_info, &expected_collator, eligibility_parent);
         assert_eq!(result, Err(SchedulingValidationError::InvalidSignature));
     }
 
     #[test]
-    fn verify_resubmission_signature_wrong_internal_scheduling_parent() {
-        // Test: Signature for different internal_scheduling_parent fails verification
+    fn verify_resubmission_signature_wrong_eligibility_parent() {
+        // Test: Signature for different eligibility_parent fails verification
         use cumulus_primitives_core::SchedulingInfoPayload;
         use sp_core::Pair;
 
@@ -528,7 +528,7 @@ mod tests {
         let keypair = sp_core::sr25519::Pair::from_seed(&[1u8; 32]);
         let collator_id: cumulus_primitives_core::relay_chain::CollatorId = keypair.public().into();
 
-        // Sign for one internal_scheduling_parent
+        // Sign for one eligibility_parent
         let payload = SchedulingInfoPayload::new(CoreSelector(1), signed_isp);
         let signature: CollatorSignature = keypair.sign(&payload.encode()).into();
 
@@ -538,7 +538,7 @@ mod tests {
             signature,
         };
 
-        // Verify against a different internal_scheduling_parent
+        // Verify against a different eligibility_parent
         let result = verify_resubmission_signature(&signed_info, &collator_id, verify_isp);
         assert_eq!(result, Err(SchedulingValidationError::InvalidSignature));
     }

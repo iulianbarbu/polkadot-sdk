@@ -506,7 +506,7 @@ where
 				// - relay_parent = older block (used for execution context)
 				// - header_chain contains headers from newest to oldest (scheduling_parent backward)
 				// - header_chain length = relay_parent_offset (number of blocks between them)
-				// - last header's parent_hash = relay_parent (internal scheduling parent)
+				// - last header's parent_hash = eligibility_parent (used for slot-based eligibility check)
 
 				// The descendants are ordered from oldest to newest, so reverse them
 				let header_chain: Vec<_> = rp_descendants.iter().rev().cloned().collect();
