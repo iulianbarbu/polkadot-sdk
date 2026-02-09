@@ -80,7 +80,7 @@ This allows updating the scheduling context (`scheduling_parent`) without re-exe
 
 1. **Primitives Layer** (✅ Implemented)
    - `SignedSchedulingInfo`: Signature + core selection + peer_id
-   - `SchedulingInfoPayload`: What gets signed (core_selector + internal_scheduling_parent)
+   - `SchedulingInfoPayload`: What gets signed (core_selector + eligibility_parent)
    - `SchedulingProof`: Header chain + optional signed scheduling info
    - Validation logic in PVF
 
@@ -105,7 +105,7 @@ A collation becomes eligible for resubmission when **all** of these conditions a
 1. **Original submission failed**: Block was not backed within a configurable timeout
 2. **Block is still valid**: `relay_parent` has not expired (within async backing window)
 3. **No newer block exists**: No descendant block has been built on the same parent
-4. **Current collator is eligible**: Must be the slot author for the current `internal_scheduling_parent`
+4. **Current collator is eligible**: Must be the slot author for the current `eligibility_parent`
 5. **Resubmission limit not exceeded**: Per-block maximum attempts not reached
 
 #### Decision Timeline
@@ -156,18 +156,28 @@ enum CollationStatus {
     Backed,            // Backed but not yet included
     Included,          // Included in relay chain (success)
     Failed,            // Not backed within timeout
+    ForkSuspected,     // Relay parent not on canonical chain (fast-path)
+    Orphaned,          // Relay parent definitively orphaned (cleanup)
     Resubmitted(u32),  // Resubmitted N times
 }
 ```
 
+**Monitoring Sources**:
+1. **Backing/Inclusion Events**: Track when collations are backed or included
+2. **Timeout Monitoring**: Detect when `BACKING_TIMEOUT` expires without backing
+3. **Best Block Changes**: Detect potential forks (fast-path resubmission trigger)
+4. **Finalized Block**: Detect definitive orphaned relay parents (cleanup trigger)
+
 **Advantages**:
 - Fast response to failures
-- Can detect fork-related drops
+- Can detect fork-related drops immediately
 - Better for latency-sensitive operations
+- Enables fast-path resubmission on forks
 
 **Disadvantages**:
 - Requires continuous relay chain monitoring
 - More complex state management
+- Must handle rapid best block changes
 
 **Option B: Opportunistic Resubmission**
 
@@ -185,7 +195,298 @@ When building a new block, check if any previous blocks can be resubmitted:
 
 **Recommendation**: Implement **Option A** with active monitoring, as it better serves the low-latency goals of the v3 design.
 
-### 2. PoV Space Reservation
+### 2. Relay Chain Fork Handling
+
+#### Problem
+
+Relay chain forks present a critical challenge for resubmission:
+
+1. **Collations on orphaned forks**: A collation submitted to relay parent R1 on fork A becomes invalid if fork B becomes canonical
+2. **Wasted waiting time**: Without fork detection, the system waits `BACKING_TIMEOUT` (12s) before marking the collation as failed
+3. **Invalid relay parent references**: A relay parent on an orphaned fork may no longer be accessible or valid for new submissions
+4. **Async backing window considerations**: Forked relay parents may appear to be within the async backing window but are actually orphaned
+
+#### Fork Detection Strategy
+
+**Option A: Finalized Block Monitoring (Recommended)**
+
+Monitor finalized blocks and check if tracked relay parents are ancestors of the finalized chain:
+
+```rust
+async fn on_finalized_block(finalized: RelayHash, cache: &mut ResubmissionCache) {
+    // For each tracked collation
+    for block in cache.pending_and_failed() {
+        // Check if relay_parent is an ancestor of finalized
+        if !is_ancestor(block.relay_parent, finalized).await {
+            // Relay parent is on orphaned fork
+            cache.mark_orphaned(block.block_hash);
+        }
+    }
+}
+```
+
+**Advantages**:
+- Definitive: Finalized blocks cannot be reverted
+- Clean state management: Can safely remove orphaned blocks
+- Simple implementation: Single ancestry check per block
+
+**Disadvantages**:
+- Delayed detection: Must wait for finalization (~2-3 relay blocks)
+- May miss resubmission windows for blocks on recent forks
+
+**Option B: Best Block Monitoring (Faster but Less Certain)**
+
+Monitor best block changes and detect when tracked relay parents are not ancestors:
+
+```rust
+async fn on_best_block_changed(new_best: RelayHash, old_best: RelayHash, cache: &mut ResubmissionCache) {
+    // Potential reorg detected
+    if !is_ancestor(old_best, new_best).await {
+        // Check all pending collations
+        for block in cache.pending_and_failed() {
+            if !is_ancestor(block.relay_parent, new_best).await {
+                // Likely on orphaned fork, mark for fast resubmission
+                cache.mark_fork_suspected(block.block_hash);
+            }
+        }
+    }
+}
+```
+
+**Advantages**:
+- Fast detection: Immediate response to fork
+- Enables quick resubmission on canonical chain
+- Better for latency-sensitive operations
+
+**Disadvantages**:
+- False positives: Best block can change frequently
+- May trigger unnecessary resubmissions
+- Requires careful handling of transient forks
+
+**Recommendation**: Implement **hybrid approach**:
+- Use **Option B** for fast detection and immediate resubmission eligibility
+- Use **Option A** for definitive cleanup of orphaned blocks
+- Add `fork_suspected` state to distinguish from confirmed orphaned blocks
+
+#### State Transitions for Forks
+
+Extend the `CollationStatus` enum:
+
+```rust
+enum CollationStatus {
+    Pending,              // Submitted, waiting for backing
+    Backed,               // Backed but not yet included
+    Included,             // Included in relay chain (success)
+    Failed,               // Not backed within timeout
+    ForkSuspected,        // Relay parent not on best chain (fast-path resubmission)
+    Orphaned,             // Relay parent not ancestor of finalized (definitive)
+    Resubmitted(u32),     // Resubmitted N times
+}
+```
+
+**State Machine with Forks**:
+
+```
+                    ┌─────────┐
+                    │ Pending │
+                    └────┬────┘
+                         │
+              ┌──────────┼──────────┬─────────────┐
+              │          │          │             │
+       Backed │   Failed │    Expired      Fork detected
+              │          │          │             │
+              ▼          ▼          ▼             ▼
+         ┌────────┐  ┌──────────────┐  ┌─────────┐  ┌───────────────┐
+         │ Backed │  │ Resubmittable│  │ Expired │  │ForkSuspected  │
+         └───┬────┘  └──────┬───────┘  └─────────┘  └───────┬───────┘
+             │              │                               │
+      Included│   Resubmitted│                   Resubmit immediately
+             │              │                               │
+             ▼              ▼                               ▼
+        ┌─────────┐    ┌──────────────┐            ┌──────────────┐
+        │Included │    │ Resubmitted  │            │ Resubmitted  │
+        │(success)│    │  (pending)   │            │ (fast-path)  │
+        └─────────┘    └──────┬───────┘            └──────────────┘
+                              │
+                       (cycle back to Pending)
+                              │
+                       Finalized & orphaned
+                              │
+                              ▼
+                        ┌──────────┐
+                        │ Orphaned │ (cleanup)
+                        └──────────┘
+```
+
+#### Resubmission Eligibility with Fork Handling
+
+Update eligibility check to verify canonical chain ancestry:
+
+```rust
+async fn check_resubmission_eligibility(
+    block: &ResubmittableBlock,
+    relay_client: &impl RelayChainInterface,
+    keystore: &KeystorePtr,
+) -> Result<ResubmissionContext, EligibilityError> {
+    // 1. Get current relay chain tip (canonical chain)
+    let scheduling_parent = relay_client.best_block_hash().await?;
+
+    // 2. CRITICAL: Verify relay_parent is on canonical chain
+    if !relay_client.is_ancestor(block.relay_parent, scheduling_parent).await? {
+        return Err(EligibilityError::RelayParentNotOnCanonicalChain {
+            relay_parent: block.relay_parent,
+            best_block: scheduling_parent,
+        });
+    }
+
+    // 3. Check relay_parent is still valid (within async backing window)
+    if !is_within_async_backing_window(block.relay_parent, scheduling_parent).await {
+        return Err(EligibilityError::RelayParentExpired);
+    }
+
+    // 4. Derive eligibility_parent from header chain
+    let header_chain = build_header_chain(scheduling_parent, block.relay_parent).await?;
+    let eligibility_parent = header_chain.last()?.parent_hash;
+
+    // 5. Get Aura authorities at eligibility_parent
+    let authorities = get_aura_authorities(eligibility_parent).await?;
+
+    // 6. Derive slot from eligibility_parent
+    let slot = get_slot_from_header(eligibility_parent).await?;
+
+    // 7. Check if we have the key for the eligible authority
+    let authority_index = (slot % authorities.len()) as usize;
+    let eligible_authority = &authorities[authority_index];
+
+    if !keystore.has_keys(&[(eligible_authority.to_raw_vec(), AURA_KEY_TYPE)]) {
+        return Err(EligibilityError::NotEligibleCollator);
+    }
+
+    Ok(ResubmissionContext {
+        scheduling_parent,
+        eligibility_parent,
+        header_chain,
+        eligible_authority: eligible_authority.clone(),
+        slot,
+    })
+}
+```
+
+#### Fork Detection Implementation
+
+**Detection Service**:
+
+```rust
+pub struct ForkDetectionService {
+    relay_client: Arc<impl RelayChainInterface>,
+    cache: Arc<Mutex<ResubmissionCache>>,
+}
+
+impl ForkDetectionService {
+    /// Monitor best block changes for potential forks
+    pub async fn on_best_block_changed(&self, new_best: RelayHash) -> Result<()> {
+        let mut cache = self.cache.lock().await;
+
+        // Check all pending/failed collations
+        for block in cache.pending_and_failed() {
+            // Skip if already marked
+            if matches!(block.status, CollationStatus::ForkSuspected | CollationStatus::Orphaned) {
+                continue;
+            }
+
+            // Check if relay_parent is ancestor of new_best
+            if !self.relay_client.is_ancestor(block.relay_parent, new_best).await? {
+                // Mark for fast-path resubmission
+                cache.mark_status(block.block_hash, CollationStatus::ForkSuspected)?;
+
+                tracing::info!(
+                    relay_parent = ?block.relay_parent,
+                    new_best = ?new_best,
+                    block_hash = ?block.block_hash,
+                    "Collation relay parent not on canonical chain, marking for resubmission"
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Monitor finalized blocks for definitive cleanup
+    pub async fn on_finalized_block(&self, finalized: RelayHash) -> Result<()> {
+        let mut cache = self.cache.lock().await;
+
+        // Check all tracked collations
+        for block in cache.all_tracked() {
+            // Skip if already included or orphaned
+            if matches!(block.status, CollationStatus::Included | CollationStatus::Orphaned) {
+                continue;
+            }
+
+            // Definitive check against finalized chain
+            if !self.relay_client.is_ancestor(block.relay_parent, finalized).await? {
+                // Definitely orphaned, remove from cache
+                cache.mark_status(block.block_hash, CollationStatus::Orphaned)?;
+
+                tracing::warn!(
+                    relay_parent = ?block.relay_parent,
+                    finalized = ?finalized,
+                    block_hash = ?block.block_hash,
+                    "Collation relay parent orphaned, removing from cache"
+                );
+
+                // Cleanup after marking
+                cache.remove(&block.block_hash)?;
+            }
+        }
+
+        Ok(())
+    }
+}
+```
+
+#### Updated Trigger Conditions
+
+A collation becomes eligible for resubmission when **all** of these conditions are met:
+
+1. **Original submission failed OR fork detected**:
+   - Block was not backed within `BACKING_TIMEOUT`, OR
+   - Relay parent detected on orphaned fork (`ForkSuspected` state)
+2. **Block is still valid**: `relay_parent` has not expired (within async backing window)
+3. **Relay parent is on canonical chain**: `relay_parent` is ancestor of current best block
+4. **No newer block exists**: No descendant block has been built on the same parent
+5. **Current collator is eligible**: Must be the slot author for the current `eligibility_parent`
+6. **Resubmission limit not exceeded**: Per-block maximum attempts not reached
+
+**Fast-Path Resubmission for Forks**:
+
+Collations marked as `ForkSuspected` bypass the `BACKING_TIMEOUT` and become immediately eligible for resubmission, allowing quick recovery from fork-related drops.
+
+#### Configuration Parameters
+
+Add fork-specific configuration:
+
+```rust
+/// Enable fast-path resubmission on suspected forks.
+/// When false, fork-suspected collations still wait for BACKING_TIMEOUT.
+pub const ENABLE_FORK_FAST_PATH: bool = true;
+
+/// Time window within which reorgs are considered possible.
+/// Collations older than this from finalized tip can be definitively cleaned up.
+pub const REORG_SAFETY_WINDOW: Duration = Duration::from_secs(60); // ~10 relay blocks
+```
+
+#### Testing Requirements
+
+**Fork-Specific Test Scenarios**:
+
+1. **Simple Fork**: Collation submitted to fork A, fork B becomes canonical, resubmission succeeds on B
+2. **Deep Reorg**: Fork occurs beyond async backing window, collation becomes invalid
+3. **Transient Fork**: Best block flips between forks rapidly, system avoids duplicate resubmissions
+4. **Fork After Backing**: Collation backed on fork A, fork B becomes canonical, backing is lost
+5. **Multiple Collations on Fork**: Several collations on orphaned fork, all detected and resubmitted
+6. **Race Condition**: Fork occurs while resubmission is in flight
+
+### 3. PoV Space Reservation
 
 #### Problem
 
@@ -273,6 +574,10 @@ pub struct ResubmittableBlock {
     pub attempts: u32,
     /// Current status
     pub status: CollationStatus,
+    /// When fork was first suspected (for fast-path timing)
+    pub fork_suspected_at: Option<Instant>,
+    /// Best block hash when fork was detected
+    pub fork_detection_best_block: Option<RelayHash>,
     /// PoV data (stored for resubmission)
     pub pov: Arc<ParachainBlockData>,
     /// Parent header (needed for collation building)
@@ -287,29 +592,43 @@ pub struct ResubmittableBlock {
 #### State Transitions
 
 ```
-                 ┌─────────┐
-                 │ Pending │
-                 └────┬────┘
-                      │
-           ┌──────────┼──────────┐
-           │          │          │
-    Backed │   Failed │    Expired
-           │          │          │
-           ▼          ▼          ▼
-      ┌────────┐  ┌──────────────┐  ┌─────────┐
-      │ Backed │  │ Resubmittable│  │ Expired │
-      └───┬────┘  └──────┬───────┘  └─────────┘
-          │              │
-   Included│   Resubmitted│
-          │              │
-          ▼              ▼
-     ┌─────────┐    ┌──────────────┐
-     │Included │    │ Resubmitted  │
-     │(success)│    │  (pending)   │
-     └─────────┘    └──────┬───────┘
-                           │
-                    (cycle back to Pending)
+                    ┌─────────┐
+                    │ Pending │
+                    └────┬────┘
+                         │
+              ┌──────────┼──────────┬─────────────┐
+              │          │          │             │
+       Backed │   Failed │    Expired      Fork detected
+              │          │          │             │
+              ▼          ▼          ▼             ▼
+         ┌────────┐  ┌──────────────┐  ┌─────────┐  ┌───────────────┐
+         │ Backed │  │ Resubmittable│  │ Expired │  │ForkSuspected  │
+         └───┬────┘  └──────┬───────┘  └─────────┘  └───────┬───────┘
+             │              │                               │
+      Included│   Resubmitted│                   Resubmit immediately
+             │              │                               │
+             ▼              ▼                               ▼
+        ┌─────────┐    ┌──────────────┐            ┌──────────────┐
+        │Included │    │ Resubmitted  │            │ Resubmitted  │
+        │(success)│    │  (pending)   │            │ (fast-path)  │
+        └─────────┘    └──────┬───────┘            └──────────────┘
+                              │
+                       (cycle back to Pending)
+                              │
+                       Finalized & orphaned
+                              │
+                              ▼
+                        ┌──────────┐
+                        │ Orphaned │ (cleanup)
+                        └──────────┘
 ```
+
+**Fork-Related Transitions**:
+- `Pending` → `ForkSuspected`: Best block changes and relay parent is not an ancestor
+- `Failed` → `ForkSuspected`: Timeout expires on a fork, detected later
+- `ForkSuspected` → `Resubmitted`: Immediate resubmission (bypass timeout)
+- `ForkSuspected` → `Orphaned`: Finalized block confirms orphaning
+- `*` → `Orphaned`: Any state can transition to Orphaned when finalized block confirms
 
 #### Storage Management
 
@@ -367,15 +686,15 @@ async fn check_resubmission_eligibility(
         return None;
     }
 
-    // 3. Derive internal_scheduling_parent from header chain
+    // 3. Derive eligibility_parent from header chain
     let header_chain = build_header_chain(scheduling_parent, block.relay_parent).await?;
-    let internal_scheduling_parent = header_chain.last()?.parent_hash;
+    let eligibility_parent = header_chain.last()?.parent_hash;
 
-    // 4. Get Aura authorities at internal_scheduling_parent
-    let authorities = get_aura_authorities(internal_scheduling_parent).await?;
+    // 4. Get Aura authorities at eligibility_parent
+    let authorities = get_aura_authorities(eligibility_parent).await?;
 
-    // 5. Derive slot from internal_scheduling_parent
-    let slot = get_slot_from_header(internal_scheduling_parent).await?;
+    // 5. Derive slot from eligibility_parent
+    let slot = get_slot_from_header(eligibility_parent).await?;
 
     // 6. Check if we have the key for the eligible authority
     let authority_index = (slot % authorities.len()) as usize;
@@ -387,7 +706,7 @@ async fn check_resubmission_eligibility(
 
     Some(ResubmissionContext {
         scheduling_parent,
-        internal_scheduling_parent,
+        eligibility_parent,
         header_chain,
         eligible_authority: eligible_authority.clone(),
         slot,
@@ -406,7 +725,7 @@ async fn sign_resubmission(
     // Create payload
     let payload = SchedulingInfoPayload {
         core_selector,
-        internal_scheduling_parent: context.internal_scheduling_parent,
+        eligibility_parent: context.eligibility_parent,
     };
 
     // Sign with eligible authority's key
@@ -652,29 +971,44 @@ pub struct SignedSchedulingInfo {
 
 #### Engineer A: Detection & Monitoring System
 
-**Estimated Effort**: 2-2.5 weeks
+**Estimated Effort**: 2.5-3 weeks
 
 **Tasks**:
-- [ ] Subscribe to relay chain block import notifications
+- [ ] Subscribe to relay chain notifications:
+  - [ ] Block import notifications (best block changes)
+  - [ ] Finalized block notifications
+  - [ ] Backing and inclusion events
 - [ ] Implement collation status tracking:
   - [ ] Track submitted collations (pending → backed → included)
   - [ ] Detect backing timeouts (BACKING_TIMEOUT = 12s)
   - [ ] Handle fork transitions
+- [ ] Implement fork detection service:
+  - [ ] Monitor best block changes for potential forks
+  - [ ] Check relay parent ancestry on best block change
+  - [ ] Mark fork-suspected collations for fast-path resubmission
+  - [ ] Monitor finalized blocks for definitive cleanup
+  - [ ] Implement ancestry checking via relay chain client
 - [ ] Implement state transition logic:
   - [ ] Pending → Failed (on timeout)
   - [ ] Pending → Backed (on backing detected)
   - [ ] Backed → Included (on inclusion detected)
+  - [ ] Pending/Failed → ForkSuspected (on fork detected)
+  - [ ] ForkSuspected → Orphaned (on finalized confirmation)
   - [ ] Failed → Resubmittable (eligibility check)
 - [ ] Add resubmission attempt tracking and limits
 - [ ] Integrate with `ResubmissionCache` (from Engineer B)
-- [ ] Add telemetry and logging
-- [ ] Create integration tests with mock relay chain
+- [ ] Add telemetry and logging (including fork-specific metrics)
+- [ ] Create integration tests with mock relay chain:
+  - [ ] Test simple fork detection and recovery
+  - [ ] Test rapid best block changes (transient forks)
+  - [ ] Test definitive cleanup on finalized blocks
 
 **Deliverables**:
 - Status monitoring system with relay chain integration
-- State machine with full lifecycle handling
-- Integration tests demonstrating timeout detection
-- Telemetry instrumentation
+- Fork detection service with fast-path and cleanup logic
+- State machine with full lifecycle handling including forks
+- Integration tests demonstrating timeout and fork detection
+- Telemetry instrumentation including fork metrics
 
 **Dependencies**: Requires Phase 2 (Engineer B) cache infrastructure
 
@@ -684,10 +1018,13 @@ pub struct SignedSchedulingInfo {
 
 **Tasks**:
 - [ ] Implement eligibility checking logic:
+  - [ ] Verify relay_parent is on canonical chain (ancestry check)
+  - [ ] Check relay_parent is within async backing window
   - [ ] Build header chain from scheduling_parent to relay_parent
-  - [ ] Derive internal_scheduling_parent
-  - [ ] Query Aura authorities at internal_scheduling_parent
+  - [ ] Derive eligibility_parent
+  - [ ] Query Aura authorities at eligibility_parent
   - [ ] Calculate slot and check if local collator is eligible
+  - [ ] Handle eligibility errors (relay parent not canonical, expired, etc.)
 - [ ] Implement signing logic:
   - [ ] Create `SchedulingInfoPayload`
   - [ ] Sign with keystore (eligible authority's key)
@@ -698,15 +1035,24 @@ pub struct SignedSchedulingInfo {
   - [ ] Reconstruct `ParachainCandidate`
   - [ ] Call `build_collation_v3`
   - [ ] Submit to collation-generation subsystem
-- [ ] Add error handling and retry logic
-- [ ] Create unit tests for eligibility and signing
-- [ ] Create integration tests for end-to-end resubmission
+- [ ] Add error handling and retry logic:
+  - [ ] Handle relay parent not on canonical chain
+  - [ ] Handle ancestry check failures
+  - [ ] Exponential backoff on repeated failures
+- [ ] Create unit tests for eligibility and signing:
+  - [ ] Test canonical chain verification
+  - [ ] Test fork scenarios (relay parent not ancestor)
+  - [ ] Test async backing window edge cases
+- [ ] Create integration tests for end-to-end resubmission:
+  - [ ] Test successful resubmission
+  - [ ] Test resubmission after fork recovery
 
 **Deliverables**:
 - Complete resubmission engine with eligibility checking
+- Canonical chain verification logic
 - Signature generation and verification
 - End-to-end resubmission flow
-- Comprehensive test suite
+- Comprehensive test suite including fork scenarios
 
 **Dependencies**: Requires Phase 2 (Engineer B) cache infrastructure
 
@@ -757,11 +1103,20 @@ pub struct SignedSchedulingInfo {
 - [ ] **Integration Tests**:
   - [ ] End-to-end resubmission flow with real relay chain
   - [ ] Multi-collator scenarios (coordination testing)
-  - [ ] Fork handling and chain reorganizations
+  - [ ] **Fork handling scenarios**:
+    - [ ] Simple fork: Collation on fork A, resubmit on canonical fork B
+    - [ ] Deep reorg: Fork beyond async backing window
+    - [ ] Transient forks: Rapid best block changes
+    - [ ] Fork after backing: Backing lost due to fork
+    - [ ] Multiple collations on same fork
   - [ ] Session boundary transitions
 - [ ] **Zombienet Tests**:
   - [ ] Network-level resubmission scenarios (3+ collators)
   - [ ] Performance under load (high block production rate)
+  - [ ] **Fork resilience testing**:
+    - [ ] Network partitions causing forks
+    - [ ] Collator behavior across fork boundaries
+    - [ ] Fast-path resubmission timing verification
   - [ ] Byzantine collator behavior (invalid signatures, spam)
   - [ ] Reputation attribution verification
 - [ ] Performance benchmarks:
@@ -1147,6 +1502,12 @@ enum CollationEvent {
 - `resubmission_cache_size_bytes`: Gauge
 - `backing_timeout_expired_total`: Counter
 - `resubmission_signature_errors_total`: Counter
+- **Fork-related metrics**:
+  - `fork_detected_total`: Counter (forks detected)
+  - `fork_suspected_collations_total`: Counter (collations marked as fork-suspected)
+  - `orphaned_collations_total`: Counter (collations definitively orphaned)
+  - `fork_fast_path_resubmissions_total`: Counter (fast-path resubmissions triggered)
+  - `fork_recovery_latency_seconds`: Histogram (time from fork detection to resubmission)
 
 **Recommendation**: Implement comprehensive metrics from the start to enable production tuning.
 
@@ -1162,6 +1523,28 @@ enum CollationEvent {
 
 **Recommendation**: Ensure resubmission logic respects per-core scheduling and doesn't interfere with fresh block production. Prioritize fresh blocks over resubmissions when both are available.
 
+### Q6: Fork Detection Thresholds and Tuning
+
+**Question**: What are the optimal thresholds for fork detection and fast-path resubmission?
+
+**Considerations**:
+- **Fast-path vs. normal-path tradeoff**: Fast-path resubmission on suspected forks is aggressive but may trigger false positives on rapid best block changes
+- **Reorg safety window**: How long to keep blocks before definitive cleanup? Must balance memory usage vs. deep reorg recovery
+- **Ancestry check frequency**: How often to verify relay parent ancestry? Affects CPU overhead and detection latency
+- **Finalization lag**: Finalization takes ~2-3 relay blocks; blocks in this window are in limbo
+
+**Research Needed**:
+- Analyze historical fork frequency and depth on mainnet relay chains
+- Measure false positive rate for fork detection on rapid best block changes
+- Profile CPU overhead of ancestry checks at various frequencies
+- Model optimal reorg safety window based on historical reorg depths
+
+**Recommendation**:
+- Start with aggressive fast-path (enabled by default) since false positives only trigger resubmission attempts that will fail eligibility checks (no harm done)
+- Set reorg safety window to 60s (~10 relay blocks) to handle worst-case reorg scenarios
+- Monitor fork detection metrics in production and tune based on empirical data
+- Consider adaptive thresholds based on network stability (more conservative during unstable periods)
+
 ## Security Analysis
 
 ### Threat Model
@@ -1172,7 +1555,7 @@ enum CollationEvent {
 
 **Mitigation**:
 - Signature verification ensures only eligible collator for current slot can resubmit
-- `SchedulingInfoPayload` binds signature to specific `internal_scheduling_parent`
+- `SchedulingInfoPayload` binds signature to specific `eligibility_parent`
 - PVF validation rejects invalid signatures
 
 **Residual Risk**: Low. Cryptographic signature prevents this attack.
@@ -1207,9 +1590,9 @@ enum CollationEvent {
 **Attack**: Attacker reuses `SignedSchedulingInfo` for a different scheduling context.
 
 **Mitigation**:
-- `SchedulingInfoPayload` includes `internal_scheduling_parent` in signature
+- `SchedulingInfoPayload` includes `eligibility_parent` in signature
 - Cannot reuse signature across different scheduling contexts
-- PVF validates signature against claimed `internal_scheduling_parent`
+- PVF validates signature against claimed `eligibility_parent`
 
 **Residual Risk**: Low. Binding to scheduling context prevents replay.
 
@@ -1235,6 +1618,37 @@ enum CollationEvent {
 
 **Residual Risk**: Low with proper enforcement. Critical to implement Phase 2.
 
+#### T7: Fork-Based DOS
+
+**Attack**: Malicious collator or relay chain participant creates frequent short forks to trigger excessive resubmissions, wasting validator resources.
+
+**Mitigation**:
+- Fast-path resubmission still requires eligibility checks (canonical chain verification)
+- Resubmissions on non-canonical relay parents will be rejected by PVF validation
+- `MAX_RESUBMISSION_ATTEMPTS` limits total resubmissions per block
+- Fork detection metrics enable monitoring of abnormal fork frequency
+
+**Residual Risk**: Medium. Network-level fork spam can trigger wasted work.
+
+**Recommendation**:
+- Add rate limiting per collator for resubmission attempts
+- Monitor fork detection metrics for abnormal patterns
+- Consider implementing collator-level backoff on repeated fork-triggered resubmissions
+
+#### T8: Ancestry Check Manipulation
+
+**Attack**: Malicious relay chain node provides false ancestry information to collator, causing incorrect fork detection.
+
+**Mitigation**:
+- Collators should connect to multiple trusted relay chain nodes
+- Ancestry checks against finalized chain provide ground truth
+- PVF validation independently verifies relay parent validity
+- Invalid ancestry information will cause eligibility check failures (collation rejected)
+
+**Residual Risk**: Low if collator uses trusted relay chain endpoints.
+
+**Recommendation**: Document best practices for relay chain node selection and configuration.
+
 ### Security Recommendations
 
 1. **Implement PoV reservation (Phase 2) before enabling resubmission**: Without this, resubmission can fail unexpectedly.
@@ -1246,6 +1660,14 @@ enum CollationEvent {
 4. **Rate limit resubmissions at gossip layer**: Prevent network flooding from misbehaving collators.
 
 5. **Audit signature verification code**: Critical path for security, should receive thorough review and testing.
+
+6. **Monitor fork detection metrics**: Abnormal fork frequency or patterns may indicate attacks or network issues.
+
+7. **Use trusted relay chain nodes**: Collators should connect to multiple trusted relay chain nodes to prevent ancestry manipulation attacks.
+
+8. **Implement collator-level rate limiting**: Add per-collator backoff for repeated fork-triggered resubmissions to mitigate DOS attacks.
+
+9. **Validate canonical chain ancestry**: Always verify relay parent is on canonical chain before resubmission attempts.
 
 ## Success Metrics
 
@@ -1293,13 +1715,14 @@ enum CollationEvent {
 
 Collation resubmission support is a critical component of the Low Latency v2 design, enabling efficient reuse of already-built blocks. This design provides:
 
-1. **Clear trigger conditions** for when to resubmit (active monitoring with 12s timeout)
-2. **Robust PoV reservation** to ensure resubmission feasibility (~750 bytes for offset=3)
-3. **Comprehensive state management** for tracking resubmittable blocks
-4. **Strong security** through signature verification and reputation attribution
-5. **Pragmatic implementation plan** optimized for 2-engineer team over 8-10 weeks
+1. **Clear trigger conditions** for when to resubmit (active monitoring with 12s timeout, fast-path on forks)
+2. **Robust fork handling** with fast detection and recovery via canonical chain verification
+3. **Robust PoV reservation** to ensure resubmission feasibility (~750 bytes for offset=3)
+4. **Comprehensive state management** for tracking resubmittable blocks across forks
+5. **Strong security** through signature verification, canonical chain validation, and reputation attribution
+6. **Pragmatic implementation plan** optimized for 2-engineer team over 8-10 weeks
 
-The design prioritizes simplicity and security for the initial implementation, with identified paths for future optimization based on production data.
+The design prioritizes simplicity and security for the initial implementation, with identified paths for future optimization based on production data. Fork handling is a first-class concern with hybrid detection (fast-path via best block monitoring, definitive cleanup via finalized blocks) and comprehensive testing requirements.
 
 ### Project Timeline
 
@@ -1327,6 +1750,8 @@ parameter_types! {
     pub const MaxResubmissionWindow: u32 = 60_000; // 60 seconds
     pub const MaxResubmissionAttempts: u32 = 3;
     pub const PovReservation: u32 = 1_000; // 1KB
+    pub const EnableForkFastPath: bool = true; // Enable fast-path resubmission on forks
+    pub const ReorgSafetyWindow: u32 = 60_000; // 60 seconds
 }
 
 pub struct ResubmissionParams;
@@ -1335,6 +1760,8 @@ impl cumulus_primitives_core::ResubmissionConfig for ResubmissionParams {
     fn max_resubmission_window() -> u32 { MaxResubmissionWindow::get() }
     fn max_resubmission_attempts() -> u32 { MaxResubmissionAttempts::get() }
     fn pov_reservation() -> u32 { PovReservation::get() }
+    fn enable_fork_fast_path() -> bool { EnableForkFastPath::get() }
+    fn reorg_safety_window() -> u32 { ReorgSafetyWindow::get() }
 }
 ```
 
@@ -1348,6 +1775,10 @@ impl cumulus_primitives_core::ResubmissionConfig for ResubmissionParams {
 --resubmission-backing-timeout 12000
 --resubmission-max-window 60000
 --resubmission-max-attempts 3
+
+# Configure fork handling
+--resubmission-enable-fork-fast-path true  # Enable fast-path resubmission on forks
+--resubmission-reorg-safety-window 60000   # Time window for reorg safety
 
 # Configure cache size
 --resubmission-cache-size 100  # max blocks to track
@@ -1374,6 +1805,27 @@ blocks_awaiting_resubmission
 
 # Cache pressure
 resubmission_cache_size_bytes / resubmission_cache_limit_bytes
+
+# Fork detection rate (forks per hour)
+sum(rate(fork_detected_total[1h]))
+
+# Fork-related collation drops (percentage)
+sum(rate(fork_suspected_collations_total[1h]))
+/
+sum(rate(collations_submitted_total[1h]))
+
+# Fast-path resubmission effectiveness
+sum(rate(fork_fast_path_resubmissions_total{result="success"}[1h]))
+/
+sum(rate(fork_fast_path_resubmissions_total[1h]))
+
+# Fork recovery speed (median)
+histogram_quantile(0.5,
+  rate(fork_recovery_latency_seconds_bucket[5m])
+)
+
+# Orphaned blocks cleanup rate
+sum(rate(orphaned_collations_total[1h]))
 ```
 
 ### Grafana Dashboard
@@ -1384,6 +1836,12 @@ Key panels to include:
 - Cache size and eviction rate
 - PoV overhead distribution
 - Per-collator resubmission statistics
+- **Fork-specific panels**:
+  - Fork detection events timeline
+  - Fork-suspected vs. timeout-triggered resubmissions
+  - Fork recovery latency distribution
+  - Orphaned blocks cleanup over time
+  - Fast-path vs. normal-path success rates
 
 ## References
 

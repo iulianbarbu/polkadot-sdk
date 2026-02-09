@@ -50,7 +50,7 @@
 | Runtime API call fails | Handled | `block_builder_task.rs:460` | Uses `.unwrap_or(false)` |
 
 **Notable Gaps:**
-1. **Re-submission support**: `scheduling.rs:88-90` explicitly rejects `relay_parent != internal_scheduling_parent`. Documented as future work.
+1. **Re-submission support**: `scheduling.rs:88-90` explicitly rejects `relay_parent != eligibility_parent`. Documented as future work.
 2. **Unit tests missing**: `scheduling.rs:96-101` has TODO comments only.
 
 ---
